@@ -7,7 +7,7 @@
  * \____/\____/_/  |_\___/\___/\___/____/____/
  *
  * The MIT License (MIT)
- * Copyright (c) 2009-2023 Gerardo Orellana <hello @ goaccess.io>
+ * Copyright (c) 2009-2024 Gerardo Orellana <hello @ goaccess.io>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -80,7 +80,9 @@
 GConf conf = {
   .append_method = 1,
   .append_protocol = 1,
+  .chunk_size = 1024,
   .hl_header = 1,
+  .jobs = 1,
   .num_tests = 10,
 };
 
@@ -349,8 +351,8 @@ allocate_data_by_module (GModule module, int col_data) {
     size = holder[module].idx > col_data ? col_data : holder[module].idx;
   }
 
-  dash->module[module].alloc_data = size;       /* data allocated  */
-  dash->module[module].ht_size = holder[module].ht_size;        /* hash table size */
+  dash->module[module].alloc_data = size; /* data allocated  */
+  dash->module[module].ht_size = holder[module].ht_size; /* hash table size */
   dash->module[module].idx_data = 0;
   dash->module[module].pos_y = 0;
 
@@ -436,7 +438,7 @@ collapse_current_module (void) {
   return 0;
 }
 
-/* Display message a the bottom of the terminal dashboard that panel
+/* Display message at the bottom of the terminal dashboard that panel
  * is disabled */
 static void
 disabled_panel_msg (GModule module) {
@@ -449,7 +451,7 @@ disabled_panel_msg (GModule module) {
 
 /* Set the current module/panel */
 static int
-set_module_to (GScroll * scrll, GModule module) {
+set_module_to (GScroll *scrll, GModule module) {
   if (get_module_index (module) == -1) {
     disabled_panel_msg (module);
     return 1;
@@ -566,7 +568,7 @@ expand_on_mouse_click (void) {
   return 1;
 }
 
-/* Scroll dowm expanded module to the last row */
+/* Scroll down expanded module to the last row */
 static void
 scroll_down_expanded_module (void) {
   int exp_size = get_num_expanded_data_rows ();
@@ -766,7 +768,8 @@ read_client (void *ptr_data) {
 
 /* Parse tailed lines */
 static void
-parse_tail_follow (GLog * glog, FILE * fp) {
+parse_tail_follow (GLog *glog, FILE *fp) {
+  GLogItem *logitem = NULL;
 #ifdef WITH_GETLINE
   char *buf = NULL;
 #else
@@ -780,7 +783,12 @@ parse_tail_follow (GLog * glog, FILE * fp) {
   while (fgets (buf, LINE_BUFFER, fp) != NULL) {
 #endif
     pthread_mutex_lock (&gdns_thread.mutex);
-    pre_process_log (glog, buf, 0);
+    if ((parse_line (glog, buf, 0, &logitem)) == 0 && logitem != NULL)
+      process_log (logitem);
+    if (logitem != NULL) {
+      free_glog (logitem);
+      logitem = NULL;
+    }
     pthread_mutex_unlock (&gdns_thread.mutex);
     glog->bytes += strlen (buf);
 #ifdef WITH_GETLINE
@@ -794,11 +802,12 @@ parse_tail_follow (GLog * glog, FILE * fp) {
 }
 
 static void
-verify_inode (FILE * fp, GLog * glog) {
+verify_inode (FILE *fp, GLog *glog) {
   struct stat fdstat;
 
   if (stat (glog->props.filename, &fdstat) == -1)
-    FATAL ("Unable to stat the specified log file '%s'. %s", glog->props.filename, strerror (errno));
+    FATAL ("Unable to stat the specified log file '%s'. %s", glog->props.filename,
+           strerror (errno));
 
   glog->props.size = fdstat.st_size;
   /* Either the log got smaller, probably was truncated so start reading from 0
@@ -817,7 +826,7 @@ verify_inode (FILE * fp, GLog * glog) {
  * If nothing changed, 0 is returned.
  * If log file changed, 1 is returned. */
 static int
-perform_tail_follow (GLog * glog) {
+perform_tail_follow (GLog *glog) {
   FILE *fp = NULL;
   char buf[READ_BYTES + 1] = { 0 };
   uint16_t len = 0;
@@ -842,7 +851,8 @@ perform_tail_follow (GLog * glog) {
     return 0;
 
   if (!(fp = fopen (glog->props.filename, "r")))
-    FATAL ("Unable to read the specified log file '%s'. %s", glog->props.filename, strerror (errno));
+    FATAL ("Unable to read the specified log file '%s'. %s", glog->props.filename,
+           strerror (errno));
 
   verify_inode (fp, glog);
 
@@ -869,7 +879,7 @@ perform_tail_follow (GLog * glog) {
   if (glog->props.inode) {
     glog->lp.line = glog->read;
     glog->lp.size = glog->props.size;
-    ht_insert_last_parse (glog->props.inode, glog->lp);
+    ht_insert_last_parse (glog->props.inode, &glog->lp);
   }
 
 out:
@@ -879,7 +889,7 @@ out:
 
 /* Loop over and perform a follow for the given logs */
 static void
-tail_loop_html (Logs * logs) {
+tail_loop_html (Logs *logs) {
   struct timespec refresh = {
     .tv_sec = conf.html_refresh ? conf.html_refresh : HTML_REFRESH,
     .tv_nsec = 0,
@@ -891,7 +901,7 @@ tail_loop_html (Logs * logs) {
       break;
 
     for (i = 0, ret = 0; i < logs->size; ++i)
-      ret |= perform_tail_follow (&logs->glog[i]);      /* 0.2 secs */
+      ret |= perform_tail_follow (&logs->glog[i]); /* 0.2 secs */
 
     if (1 == ret)
       tail_html ();
@@ -903,7 +913,7 @@ tail_loop_html (Logs * logs) {
 
 /* Entry point to start processing the HTML output */
 static void
-process_html (Logs * logs, const char *filename) {
+process_html (Logs *logs, const char *filename) {
   /* render report */
   pthread_mutex_lock (&gdns_thread.mutex);
   output_html (holder, filename);
@@ -988,8 +998,8 @@ render_sort_dialog (void) {
 }
 
 static void
-term_tail_logs (Logs * logs) {
-  struct timespec ts = {.tv_sec = 0,.tv_nsec = 200000000 };     /* 0.2 seconds */
+term_tail_logs (Logs *logs) {
+  struct timespec ts = {.tv_sec = 0,.tv_nsec = 200000000 }; /* 0.2 seconds */
   uint32_t offset = 0;
   int i, ret;
 
@@ -1008,10 +1018,18 @@ term_tail_logs (Logs * logs) {
 
 /* Interfacing with the keyboard */
 static void
-get_keys (Logs * logs) {
+get_keys (Logs *logs) {
   int search = 0;
   int c, quit = 1;
   uint32_t offset = 0;
+
+  struct sigaction act, oldact;
+
+  /* Change the action for SIGINT to SIG_IGN and block Ctrl+c
+   * before entering the subdialog */
+  act.sa_handler = SIG_IGN;
+  sigemptyset (&act.sa_mask);
+  act.sa_flags = 0;
 
   while (quit) {
     if (conf.stop_processing)
@@ -1031,7 +1049,9 @@ get_keys (Logs * logs) {
     case KEY_F (1):
     case '?':
     case 'h':
+      sigaction (SIGINT, &act, &oldact);
       load_help_popup (main_win);
+      sigaction (SIGINT, &oldact, NULL);
       render_screens (offset);
       break;
     case 49:   /* 1 */
@@ -1162,13 +1182,13 @@ get_keys (Logs * logs) {
       expand_current_module ();
       display_content (main_win, dash, &gscroll);
       break;
-    case KEY_DOWN:     /* scroll main dashboard */
+    case KEY_DOWN: /* scroll main dashboard */
       if ((gscroll.dash + main_win_height) < dash->total_alloc) {
         gscroll.dash++;
         display_content (main_win, dash, &gscroll);
       }
       break;
-    case KEY_MOUSE:    /* handles mouse events */
+    case KEY_MOUSE: /* handles mouse events */
       if (expand_on_mouse_click () == 0)
         render_screens (offset);
       break;
@@ -1202,20 +1222,29 @@ get_keys (Logs * logs) {
         render_screens (offset);
       break;
     case '/':
+      sigaction (SIGINT, &act, &oldact);
       if (render_search_dialog (search) == 0)
         render_screens (offset);
+      sigaction (SIGINT, &oldact, NULL);
       break;
     case 99:   /* c */
       if (conf.no_color)
         break;
+
+      sigaction (SIGINT, &act, &oldact);
       load_schemes_win (main_win);
+      sigaction (SIGINT, &oldact, NULL);
+
       free_dashboard (dash);
       allocate_data ();
       set_wbkgd (main_win, header_win);
       render_screens (offset);
       break;
     case 115:  /* s */
+      sigaction (SIGINT, &act, &oldact);
       render_sort_dialog ();
+      sigaction (SIGINT, &oldact, NULL);
+
       render_screens (offset);
       break;
     case 269:
@@ -1265,7 +1294,7 @@ init_processing (void) {
 
 /* Determine the type of output, i.e., JSON, CSV, HTML */
 static void
-standard_output (Logs * logs) {
+standard_output (Logs *logs) {
   char *csv = NULL, *json = NULL, *html = NULL;
 
   /* CSV */
@@ -1275,8 +1304,11 @@ standard_output (Logs * logs) {
   if (find_output_type (&json, "json", 1) == 0)
     output_json (holder, json);
   /* HTML */
-  if (find_output_type (&html, "html", 1) == 0 || conf.output_format_idx == 0)
+  if (find_output_type (&html, "html", 1) == 0 || conf.output_format_idx == 0) {
+    if (conf.real_time_html)
+      setup_ws_server (gwswriter, gwsreader);
     process_html (logs, html);
+  }
 
   free (csv);
   free (html);
@@ -1285,7 +1317,7 @@ standard_output (Logs * logs) {
 
 /* Output to a terminal */
 static void
-curses_output (Logs * logs) {
+curses_output (Logs *logs) {
   allocate_data ();
 
   clean_stdscrn ();
@@ -1389,7 +1421,7 @@ out2:
 /* Determine if we are getting data from the stdin, and where are we
  * outputting to. */
 static void
-set_io (FILE ** pipe) {
+set_io (FILE **pipe) {
   /* For backwards compatibility, check if we are not outputting to a
    * terminal or if an output format was supplied */
   if (!isatty (STDOUT_FILENO) || conf.output_format_idx > 0)
@@ -1408,7 +1440,14 @@ parse_cmd_line (int argc, char **argv) {
 
 static void
 handle_signal_action (GO_UNUSED int sig_number) {
-  fprintf (stderr, "\nSIGINT caught!\n");
+  if (sig_number == SIGINT)
+    fprintf (stderr, "\nSIGINT caught!\n");
+  else if (sig_number == SIGTERM)
+    fprintf (stderr, "\nSIGTERM caught!\n");
+  else if (sig_number == SIGQUIT)
+    fprintf (stderr, "\nSIGQUIT caught!\n");
+  else
+    fprintf (stderr, "\nSignal %d caught!\n", sig_number);
   fprintf (stderr, "Closing GoAccess...\n");
 
   if (conf.output_stdout && conf.real_time_html)
@@ -1426,6 +1465,7 @@ setup_thread_signals (void) {
 
   sigaction (SIGINT, &act, NULL);
   sigaction (SIGTERM, &act, NULL);
+  sigaction (SIGQUIT, &act, NULL);
   signal (SIGPIPE, SIG_IGN);
 
   /* Restore old signal mask for the main thread */
@@ -1434,13 +1474,14 @@ setup_thread_signals (void) {
 
 static void
 block_thread_signals (void) {
-  /* Avoid threads catching SIGINT/SIGPIPE/SIGTERM and handle them in
+  /* Avoid threads catching SIGINT/SIGPIPE/SIGTERM/SIGQUIT and handle them in
    * main thread */
   sigset_t sigset;
   sigemptyset (&sigset);
   sigaddset (&sigset, SIGINT);
   sigaddset (&sigset, SIGPIPE);
   sigaddset (&sigset, SIGTERM);
+  sigaddset (&sigset, SIGQUIT);
   pthread_sigmask (SIG_BLOCK, &sigset, &oldset);
 }
 
@@ -1531,7 +1572,6 @@ spawn_ws (void) {
 
   if (conf.daemonize)
     daemonize ();
-  setup_ws_server (gwswriter, gwsreader);
 
   return 0;
 }
@@ -1557,7 +1597,7 @@ set_standard_output (void) {
 
 /* Set up curses. */
 static void
-set_curses (Logs * logs, int *quit) {
+set_curses (Logs *logs, int *quit) {
   const char *err_log = NULL;
 
   setup_thread_signals ();
